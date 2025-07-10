@@ -34,9 +34,6 @@ def write_dir_tiffs(
     filename_prefix : str, optional
         A prefix for the output filenames. If None, uses data_array.name.
         Defaults to None.
-    compute : bool, optional
-        Whether to compute and save the files immediately using dask.
-        Defaults to True. If False, returns the list of delayed tasks.
 
     """
     run_name = image.attrs["run_name"]

@@ -12,7 +12,6 @@
     "[jsonc][yaml]": {
         "editor.defaultFormatter": "esbenp.prettier-vscode",
     },
-    "python.analysis.typeCheckingMode": "basic",
     "python.testing.pytestEnabled": true,
     "python.testing.pytestArgs": ["-vv", "--color=yes"],
     "rust-analyzer.checkOnSave": false,

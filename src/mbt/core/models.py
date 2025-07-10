@@ -69,8 +69,21 @@ class MassCalibrationModel(BaseModel):
 
 
 class ImageType(StrEnum):
-    """Enum for the type of image."""
+    """Enum for the different image types."""
 
-    counts = "counts"
-    intensity = "intensity"
-    intensity_width = "intensity_width"
+    ALL = "all"
+    COUNTS = "counts"
+    INTENSITY = "intensity"
+    INTENSITY_WIDTH = "intensity_width"
+
+
+class Format(StrEnum):
+    """Enum for the different formats."""
+
+    TIFFS = "tiffs"
+    OME_ZARR = "ome-zarr"
+    XRDATSET = "xrdataset"
+
+
+# Helper constant for actual, non-aggregate image types
+_CONCRETE_IMAGE_TYPES = tuple(it for it in ImageType if it != ImageType.ALL)

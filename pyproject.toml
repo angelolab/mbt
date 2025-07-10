@@ -20,20 +20,23 @@ classifiers = [
 ]
 dynamic = [ "version" ]
 dependencies = [
+  "icechunk>=1",
   "loguru>=0.7.3",
+  "maturin-import-hook>=0.3",
+  "more-itertools>=10.7",
   "natsort>=8.4",
-  "numpydantic>=1.6.8",
+  "numpydantic>=1.6.9",
   "patito>=0.8.3",
-  "polars>=1.29",
+  "polars>=1.31",
   # for debug logging (referenced from the issue template)
-  "pydantic>=2.11.4",
-  "session-info",
-  "sparse>=0.16",
+  "pydantic>=2.11.7",
+  "session-info2>=0.1.2",
+  "sparse>=0.17",
   "spatial-image>=1.2.1",
   "tqdm>=4.67.1",
-  "typer>=0.15.3",
+  "typer>=0.16",
   "universal-pathlib",
-  "xarray[accel,parallel]>=2025.4",
+  "xarray[accel,parallel]>=2025.7.1",
 ]
 optional-dependencies.dev = [ "pre-commit" ]
 optional-dependencies.doc = [

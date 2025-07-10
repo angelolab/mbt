@@ -196,7 +196,6 @@ def write_dataset_to_zarr(
     else:
         calculated_shard_shape = shard_shape  # Use user-provided shape
 
-    # Ensure storage_chunks are in the correct order for encoding (assume C, Y, X)
     storage_chunks_tuple = tuple(storage_chunks[d] for d in [C, Y, X])
     # Ensure calculated_shard_shape is ordered correctly
     shard_shape_tuple = tuple(calculated_shard_shape[d] for d in [C, Y, X])
@@ -269,7 +268,7 @@ def write_ome_zarr(
     """
     _configure_zarr()
 
-    out_dir = UPath(output_directory) / run_fmt_name
+    out_dir = UPath(output_directory) / fov_fmt_name
     out_dir.mkdir(parents=True, exist_ok=True)
 
     available_types = set(image_data.keys())

@@ -10,6 +10,8 @@ try:
 except ImportError:
     from typing_extensions import TypedDict, Unpack
 
+from pathlib import Path
+
 import numpy as np
 import numpydantic.dtype as ndt
 import patito as pt
@@ -19,13 +21,27 @@ from loguru import logger
 from numpydantic import NDArray
 from polars._typing import ParquetCompression
 from polars.io.cloud.credential_provider._providers import CredentialProviderFunction
-from tqdm.auto import tqdm
 from upath import UPath
 
 from mbt._core import MibiReader
-from mbt.core.models import C, ImageType, MassCalibrationModel, MibiDataModel, MibiFilePanelModel, UserPanelModel, X, Y
-from mbt.core.utils import _set_tof_ranges, format_image_name, format_run_name
+from mbt.core.models import (
+    C,
+    ImageType,
+    MassCalibrationModel,
+    MibiDataModel,
+    MibiFilePanelModel,
+    UserPanelModel,
+    X,
+    Y,
+)
+from mbt.core.utils import (
+    _set_tof_ranges,
+    format_image_name,
+    format_run_name,
+    resolve_image_types,
+)
 from mbt.im import to_xarray
+from mbt.io import write_dir_tiffs
 
 
 # Helper decorator to handle potential errors during property loading
@@ -178,7 +194,7 @@ class MibiFile:
     @_property_loader
     def fov_name(self) -> str:
         """(Cached) Returns the FOV name."""
-        return self.reader.fov_name
+        return self.reader.fov_name or self.file_path.stem
 
     @cached_property
     @_property_loader
@@ -313,12 +329,7 @@ class MibiFile:
     @_property_loader
     def data(self) -> pt.LazyFrame[MibiDataModel]:
         """(Cached) Lazily loads and returns the validated pulse data LazyFrame."""
-        import time
-
-        start_time = time.time()
         raw_data_df: pl.DataFrame = self.reader.get_dataframe()
-        end_time = time.time()
-        print(f"Time taken to read data: {end_time - start_time} seconds")
         # Validate the raw data against the MibiDataModel
         validated_data_df = MibiDataModel.validate(raw_data_df)
         return validated_data_df.lazy()
@@ -401,12 +412,7 @@ class MibiFile:
         channel_names: list[str] = grouped_panel.get_column("grouped_channel_name").to_list()
         output_images: dict[str, NDArray] = {name: np.zeros((ny, nx), dtype=output_dtype) for name in channel_names}
 
-        for row in tqdm(
-            grouped_panel.iter_rows(named=True),
-            total=len(grouped_panel),
-            desc=f"Generating {image_type} image",
-            unit="masses",
-        ):
+        for row in grouped_panel.iter_rows(named=True):
             grouped_channel_name = row["grouped_channel_name"]
             lower_tof = row["lower_tof_range"]
             upper_tof = row["upper_tof_range"]
@@ -451,7 +457,7 @@ class MibiFile:
             output_dtype=ndt.UInt32,
             required_data_cols=[],
             result_col_alias="counts",
-            image_type=ImageType.counts,
+            image_type=ImageType.COUNTS,
         )
 
     @cached_property
@@ -462,7 +468,7 @@ class MibiFile:
             output_dtype=ndt.Int64,
             required_data_cols=["pulse_intensity"],
             result_col_alias="sum_intensity",
-            image_type=ImageType.intensity,
+            image_type=ImageType.INTENSITY,
         )
 
     @cached_property
@@ -473,10 +479,21 @@ class MibiFile:
             output_dtype=ndt.Int64,
             required_data_cols=["pulse_intensity", "pulse_width"],
             result_col_alias="sum_intensity_width",
-            image_type=ImageType.intensity_width,
+            image_type=ImageType.INTENSITY_WIDTH,
         )
 
     # --- Data Export --- #
+
+    def get_selected_image_data(self, image_types: list[ImageType]) -> dict[str, xr.DataArray]:
+        """Get a dictionary of selected image data arrays based on the provided image types."""
+        selected_data: dict[str, xr.DataArray] = {}
+        if ImageType.COUNTS in image_types:
+            selected_data[ImageType.COUNTS.value] = self.counts_image
+        if ImageType.INTENSITY in image_types:
+            selected_data[ImageType.INTENSITY.value] = self.intensity_image
+        if ImageType.INTENSITY_WIDTH in image_types:
+            selected_data[ImageType.INTENSITY_WIDTH.value] = self.intensity_width_image
+        return selected_data
 
     def write_data(self, file_path: PathLike, **kwargs: Unpack[WriteParquetKwargs]) -> None:
         """Write the raw pulse data (LazyFrame) to a Parquet file.
@@ -494,125 +511,111 @@ class MibiFile:
     def write_dataset_to_zarr(
         self,
         output_directory: PathLike,
+        image_types: ImageType | str | list[ImageType] | list[str] | list[ImageType | str] | None = None,
         shard_shape: dict[str, int] | Literal["auto"] | None = "auto",
     ) -> None:
         """Write the generated image DataArrays to an Xarray Dataset Zarr store.
 
-        Calls the utility function `mbt.io.zarr.write_dataset_to_zarr`.
-
         Parameters
         ----------
         output_directory
             Path to the output directory.
+        image_types
+            List of image types to write. If None, all image types will be written.
         shard_shape
-            Desired total shape of each shard file (e.g., `(n_masses, ny, nx)`).
-            If "auto" (default), uses the full variable shape.
-            Passed to the `shards` encoding parameter in `xarray.to_zarr`.
+            Shape of the shards to write. If "auto", the shard shape will be determined automatically.
         """
-        from mbt.io import write_dataset_to_zarr
+        from mbt.io.zarr import write_dataset_to_zarr
 
-        # Access properties to trigger generation/loading
+        resolved_types = resolve_image_types(image_types)
+        if not resolved_types:
+            logger.warning(
+                f"No image types resolved for Zarr dataset writing for {self.file_path}. Nothing will be written."
+            )
+            return
 
-        img_ds = xr.Dataset(
-            data_vars={
-                "counts": self.counts_image,
-                "intensity": self.intensity_image,
-                "intensity_width": self.intensity_width_image,
-            },
-            coords=self.counts_image.coords,
-        )
+        selected_images_dict = self.get_selected_image_data(resolved_types)
+        if not selected_images_dict:
+            logger.warning(
+                f"Dataset for Zarr is empty after filtering by image_types for {self.file_path}. Nothing will be written."
+            )
+            return
 
-        storage_chunks = {C: 1, Y: min(self.n_y_pixels, 256), X: min(self.n_x_pixels, 256)}
+        dataset_to_write = xr.Dataset(selected_images_dict)
+
+        default_storage_chunks = {C: 1, Y: min(self.n_y_pixels, 256), X: min(self.n_x_pixels, 256)}
 
         write_dataset_to_zarr(
-            dataset=img_ds,
+            dataset=dataset_to_write,
             output_directory=output_directory,
             run_fmt_name=self.formatted_run_name,
             fov_fmt_name=self.formatted_fov_name,
-            n_masses=self.n_masses,
+            n_masses=len(dataset_to_write.get(C, [] if C not in dataset_to_write else dataset_to_write[C])),
             ny=self.n_y_pixels,
             nx=self.n_x_pixels,
-            storage_chunks=storage_chunks,
+            storage_chunks=default_storage_chunks,
             shard_shape=shard_shape,
         )
+        logger.success(f"Successfully wrote Xarray Zarr dataset to {output_directory} for {self.file_path}")
 
     def write_ome_zarr(
         self,
         output_directory: PathLike,
-        image_type: list[Literal["counts", "intensity", "intensity_width"]] | str | list[str] | None = None,
-        scale_factors: list[dict[str, int]] | None = None,
-        chunks_per_shard: dict[str, int] | Literal["auto"] | None = "auto",
+        image_types: ImageType | str | list[ImageType] | list[str] | list[ImageType | str] | None = None,
     ) -> None:
-        """Write specified image types to individual OME-Zarr stores.
+        """Write the generated image DataArrays to an OME-Zarr store."""
+        from mbt.io.zarr import write_ome_zarr
 
-        Calls the utility function `mbt.io.zarr.write_ome_zarr`.
+        resolved_types = resolve_image_types(image_types)
+        if not resolved_types:
+            logger.warning(
+                f"No image types resolved for OME-Zarr writing for {self.file_path}. Nothing will be written."
+            )
+            return
 
-        Parameters
-        ----------
-        output_directory
-            Path to the output directory.
-        image_type
-            Image types to write. Defaults to all available types (counts, intensity, intensity_width).
-        scale_factors
-            List of scale factors to apply to the image. Defaults to `None`.
-        chunks_per_shard
-            Optional chunking configuration for zarr shards. Defaults to 'auto'.
+        image_data_dict = self.get_selected_image_data(resolved_types)
+        if not image_data_dict:
+            logger.warning(
+                f"Image data for OME-Zarr is empty after filtering for {self.file_path}. Nothing will be written."
+            )
+            return
 
-        Raises
-        ------
-        ImportError
-            If ngff-zarr is not installed (raised by the utility function).
-        ValueError
-            If an invalid image type is requested (raised by the utility function).
-        """
-        from mbt.io import write_ome_zarr
-
-        # Access properties needed for metadata/scaling
-        run_fmt_name = self.formatted_run_name
-        fov_fmt_name = self.formatted_fov_name
-        ny = self.n_y_pixels
-        nx = self.n_x_pixels
-        n_masses = self.n_masses
-        fov_microns = self.fov_size_microns
-
-        # Gather image data
-        image_data = {
-            "counts": self.counts_image,
-            "intensity": self.intensity_image,
-            "intensity_width": self.intensity_width_image,
-        }
+        ome_zarr_image_type_strings = list(image_data_dict.keys())  # Get string keys from the dict
 
         write_ome_zarr(
-            image_data=image_data,
+            image_data=image_data_dict,
             output_directory=output_directory,
-            run_fmt_name=run_fmt_name,
-            fov_fmt_name=fov_fmt_name,
-            ny=ny,
-            nx=nx,
-            n_masses=n_masses,
-            fov_microns=fov_microns,
-            image_type=image_type,
-            scale_factors=scale_factors,
-            chunks_per_shard=chunks_per_shard,
+            run_fmt_name=self.formatted_run_name,
+            fov_fmt_name=self.formatted_fov_name,
+            ny=self.n_y_pixels,
+            nx=self.n_x_pixels,
+            n_masses=len(image_data_dict),
+            fov_microns=self.fov_size_microns,
+            image_type=ome_zarr_image_type_strings,
         )
+        logger.success(f"Successfully wrote OME-Zarr to {output_directory} for {self.file_path}")
 
     def write_tifffile(
         self,
-        image_type: ImageType | str | list[str],
         output_directory: PathLike,
-        ome: bool = False,
+        image_types: ImageType | str | list[ImageType] | list[str] | list[ImageType | str] | None = None,
     ):
-        """Write the generated image DataArrays to a TIFF file."""
-        from mbt.io import write_dir_tiffs
+        """Write the generated image DataArrays to TIFF files (one per channel per image type)."""
+        resolved_types = resolve_image_types(image_types)
+        if not resolved_types:
+            logger.warning(f"No image types resolved for TIFF writing for {self.file_path}. Nothing will be written.")
+            return
 
-        if isinstance(image_type, ImageType):
-            image_type = [image_type]
-        elif isinstance(image_type, str):
-            image_type = [image_type]
+        selected_images_dict = self.get_selected_image_data(resolved_types)
+        if not selected_images_dict:
+            logger.warning(f"No images selected for TIFF writing for {self.file_path}. Nothing will be written.")
+            return
 
-        for img_type in image_type:
-            image: xr.DataArray = getattr(self, f"{img_type}_image")
-            write_dir_tiffs(image, output_directory=output_directory)
+        for image_data_array in selected_images_dict.values():
+            write_dir_tiffs(image_data_array, output_directory=Path(output_directory))
+        logger.success(
+            f"Successfully wrote TIFF files to {output_directory} for {self.file_path} (types: {list(selected_images_dict.keys())})"
+        )
 
     def to_spatialdata(self):
         """Convert the MibiFile Images to a SpatialData object."""

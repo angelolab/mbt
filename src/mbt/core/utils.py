@@ -1,6 +1,10 @@
 import re
+from collections.abc import Sequence
 
+import natsort as ns
 import polars as pl
+
+from mbt.core.models import _CONCRETE_IMAGE_TYPES, ImageType
 
 
 def _mass_to_tof(mass_expr: pl.Expr, mass_offset: float, mass_gain: float, time_resolution: float) -> pl.Expr:
@@ -130,3 +134,68 @@ def format_run_name(run_name: str) -> str:
     """
     formatted_name = re.sub(r"_part\d+$", "", run_name)
     return formatted_name
+
+
+def resolve_image_types(
+    selection: ImageType | str | list[ImageType] | list[str] | list[ImageType | str] | None,
+) -> list[ImageType]:
+    """
+    Resolves the input image type selection into a definitive list of concrete ImageType enums.
+
+    Uses natsorted for the final sort.
+
+    Parameters
+    ----------
+    selection
+        The image type selection to resolve.
+
+    Returns
+    -------
+        A list of ImageType enums.
+    """
+    if selection is None:
+        # natsorted works on the enum values directly if they are strings or comparable
+        return ns.natsorted(list(_CONCRETE_IMAGE_TYPES), key=lambda x: x.value)
+
+    final_types: set[ImageType] = set()
+    items_to_process: Sequence[ImageType | str]
+
+    if isinstance(selection, str | ImageType):
+        items_to_process = [selection]
+    elif isinstance(selection, list):
+        items_to_process = selection
+    else:
+        raise TypeError(
+            f"Invalid selection type for image_types: {type(selection)}. "
+            "Expected str, ImageType, list[str | ImageType], or None."
+        )
+
+    if not items_to_process and isinstance(selection, list):  # Handles empty list input
+        return []
+
+    for item in items_to_process:
+        if isinstance(item, str):
+            try:
+                item_standardized = item.lower()
+                if item_standardized == ImageType.ALL.value:
+                    final_types.update(_CONCRETE_IMAGE_TYPES)
+                else:
+                    # Validate and convert string to ImageType enum
+                    final_types.add(ImageType(item_standardized))
+            except ValueError as e:
+                # Re-raise with a more informative message if it's due to invalid enum value
+                valid_enums = [e.value for e in ImageType]
+                raise ValueError(
+                    f"Invalid image type string: '{item}'. Must be one of {valid_enums} (case-insensitive)."
+                ) from e
+        elif isinstance(item, ImageType):
+            if item == ImageType.ALL:
+                final_types.update(_CONCRETE_IMAGE_TYPES)
+            else:
+                final_types.add(item)
+        else:
+            raise TypeError(
+                f"Invalid item type in image_types selection list: {type(item)}. Elements must be str or ImageType."
+            )
+
+    return ns.natsorted(list(final_types), key=lambda x: x.value)

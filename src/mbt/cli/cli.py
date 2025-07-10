@@ -1,6 +1,6 @@
 import typer
 
-from .commands import info_app
+from .commands import extract_app, info_app
 
 app = typer.Typer()
 
@@ -39,3 +39,4 @@ def callback(
 
 
 app.add_typer(info_app)
+app.add_typer(extract_app)

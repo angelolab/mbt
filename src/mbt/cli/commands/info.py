@@ -10,6 +10,7 @@ from rich.console import Console, Group
 from rich.panel import Panel
 from rich.table import Table
 
+from mbt.cli.utils import error_text
 from mbt.core.mibifile import MibiFile
 from mbt.core.models import MassCalibrationModel
 
@@ -153,8 +154,8 @@ def info(path: Path = typer.Argument(..., help="Path to the Mibi file")):
             console.print(panel_details_renderable)
 
     except FileNotFoundError as e:
-        console.print(f"[bold red]Error:[/bold red] {e}")
+        console.print(error_text(f"Error: {e}"))
         raise typer.Exit(code=1) from e
     except Exception as e:
-        console.print(f"[bold red]An unexpected error occurred:[/bold red] {e}")
+        console.print(error_text(f"An unexpected error occurred: {e}"))
         raise typer.Exit(code=1) from e
