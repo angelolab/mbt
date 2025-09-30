@@ -14,19 +14,8 @@ __pycache__/
 # Tests and coverage
 /data/
 /node_modules/
+/.coverage*
 
 # docs
 /docs/generated/
 /docs/_build/
-
-
-# Rust
-rust/target/
-rust/output_tiff/
-
-# Data
-
-*/data/
-
-# IDE
-./vscode/
